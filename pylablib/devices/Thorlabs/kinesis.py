@@ -1307,7 +1307,7 @@ class KinesisMotor(KinesisDevice):
         if self._model in ["KDC101","TDC001"]:
             time_conv=2048/6E6
             return (ssc,ssc*time_conv*2**16,ssc*time_conv**2*2**16),units
-        if self._model in ["TBD001","KBD101"] or self._model.startswith("BBD10") or self._model.startswith("BBD20"):
+        if self._model in ["TBD001","KBD101"] or self._model.startswith("BBD10") or self._model.startswith("BBD20") or self._model.startswith("BBD30"):
             time_conv=102.4E-6
             return (ssc,ssc*time_conv*2**16,ssc*time_conv**2*2**16),units
         if self._model in ["TST001","MST601"] or self._model.startswith("BSC00") or self._model.startswith("BSC10") or self._model.startswith("MPC"):
