@@ -199,7 +199,7 @@ class BasicKinesisDevice(comm_backend.ICommBackendWrapper):
                     40:"(BSC101|SSC20.)", 41:"BPC101", 43:"BDC101", 44:"PPC001", 45:"LTS", 48:"MMR", 49:"MLJ",
                     50:"MST60" , 51:"MPZ601", 52:"MNA601", 55:"K10CR1", 56:"KLS101", 57:"KNA101", 59:"KSG101",
                     60:"0ST001", 63:"ODC001", 64:"TLD001", 65:"TIM001", 67:"TBD001", 68:"KSC101", 69:"KPA101",
-                    70:"BSC.03", 71:"BPC.03", 72:"BPS103", 73:"BBD103", 
+                    70:"BSC.03", 71:"BPC.0[13]", 72:"BPS103", 73:"BBD103", 
                     80:"TST001", 81:"TPZ001", 82:"TNZ001", 83:"TDC001", 84:"TSG001", 85:"TSC001", 86:"TLS001", 87:"TTC001", 89:"TQD001", 
                     90:"SCC101", 91:"PCC101", 93:"DCC101", 94:"BCC101", 95:"PPC102", 96:"PCC102"}
     def _get_device_model(self):
@@ -1480,6 +1480,231 @@ class KinesisPiezoController(KinesisDevice):
 
 
 
+
+class BPC301(KinesisPiezoController):
+    """
+    BPC301/BPC303 Benchtop Piezo Controller.
+    
+    Extends KinesisPiezoController with BPC301-specific functionality including
+    slew rate control and factory reset capability.
+    
+    Args:
+        conn(str): serial connection parameters (usually an 8-digit device serial number).
+    """
+    def __init__(self, conn, is_rack_system=False):
+        super().__init__(conn, is_rack_system=is_rack_system)
+        # Add BPC301-specific background communication messages
+        self.add_background_comm(0x0661)  # PZ status update
+        self.add_background_comm(0x0662)  # PZ status update acknowledgment
+        
+        # Extend status bits with BPC30x specific voltage range detection
+        self._pzctl_status_bits = self._pzctl_status_bits + [
+            (1<<13, "voltage_75V"),    # Hardware set to 75V max
+            (1<<14, "voltage_100V"),   # Hardware set to 100V max
+            (1<<15, "voltage_150V"),   # Hardware set to 150V max
+        ]
+    
+    def set_slew_rates(self, rate1=None, rate2=None, channel=None):
+        """
+        Set slew rates for voltage changes.
+        
+        Args:
+            rate1: First slew rate parameter
+            rate2: Second slew rate parameter  
+            channel: Channel number (if None, use default)
+        """
+        channel=channel or self._default_axis
+        data=struct.pack("<HHH",channel,rate1 or 0,rate2 or 0)
+        self.send_comm_data(0x0683,data,channel)
+    
+    def get_slew_rates(self, channel=None):
+        """
+        Get current slew rates.
+        
+        Args:
+            channel: Channel number (if None, use default)
+            
+        Returns:
+            tuple: (rate1, rate2) slew rate parameters
+        """
+        channel=channel or self._default_axis
+        data=struct.pack("<H",channel)
+        response=self.send_comm_data(0x0684,data,channel)
+        if len(response)>=6:
+            _,rate1,rate2=struct.unpack("<HHH",response[:6])
+            return (rate1,rate2)
+        return (0,0)
+    
+    def factory_reset(self, channel=None):
+        """
+        Perform factory reset to restore default settings.
+        
+        Args:
+            channel: Channel number (if None, use default)
+        """
+        channel=channel or self._default_axis
+        data=struct.pack("<H",channel)
+        self.send_comm_data(0x0686,data,channel)
+    
+    def set_output_max_voltage(self, max_voltage, channel=None):
+        """
+        Set maximum output voltage for the piezo actuator.
+        
+        Args:
+            max_voltage (float): Maximum voltage in volts (0-150V depending on hardware)
+            channel: Channel number (if None, use default)
+            
+        Returns:
+            tuple: (max_voltage, hardware_flags) Current settings
+        """
+        channel=channel or self._default_axis
+        # Convert voltage to 0.1V steps (0-1500 for 0-150V)
+        voltage_steps = int(max_voltage * 10)
+        voltage_steps = max(0, min(voltage_steps, 1500))  # Clamp to valid range
+        
+        data=struct.pack("<HHH", channel, voltage_steps, 0)  # flags set to 0 for SET
+        self.send_comm_data(0x0680, data, channel)
+        return self.get_output_max_voltage(channel)
+    
+    def get_output_max_voltage(self, channel=None):
+        """
+        Get maximum output voltage and hardware capability flags.
+        
+        Args:
+            channel: Channel number (if None, use default)
+            
+        Returns:
+            tuple: (max_voltage, capability_dict) where capability_dict contains
+                   '75V', '100V', '150V' keys indicating hardware limits
+        """
+        channel=channel or self._default_axis
+        data=struct.pack("<H", channel)
+        response=self.send_comm_data(0x0681, data, channel)
+        
+        if len(response) >= 6:
+            _, voltage_steps, flags = struct.unpack("<HHH", response[:6])
+            max_voltage = voltage_steps / 10.0  # Convert from 0.1V steps to volts
+            
+            # Decode hardware capability flags
+            capabilities = {
+                '75V': bool(flags & 0x02),   # Bit 1
+                '100V': bool(flags & 0x04),  # Bit 2  
+                '150V': bool(flags & 0x08)   # Bit 3
+            }
+            
+            return (max_voltage, capabilities)
+        return (0.0, {'75V': False, '100V': False, '150V': False})
+    
+    def set_zero_position(self, channel=None):
+        """
+        Set current position as zero reference.
+        
+        This function applies 0V to the actuator and sets the current position
+        as the zero reference for all subsequent position readings. Typically
+        called during initialization or re-initialization.
+        
+        Args:
+            channel: Channel number (if None, use default)
+        """
+        channel=channel or self._default_axis
+        data=struct.pack("<H", channel)
+        self.send_comm_data(0x0658, data, channel)
+    
+    def set_lut_parameters(self, cycle_length=None, delay_time=None, channel=None):
+        """
+        Set LUT (Look-Up Table) parameters for waveform generation.
+        
+        Args:
+            cycle_length (int): Number of samples per cycle (0-7999 for BPC units)
+            delay_time (int): Delay between samples (1-2147483648 intervals)
+            channel: Channel number (if None, use default)
+        """
+        channel=channel or self._default_axis
+        # Get current parameters first
+        data=struct.pack("<H", channel)
+        response=self.send_comm_data(0x0704, data, channel)
+        
+        if len(response) >= 10:
+            # Unpack current parameters
+            _, cur_cycle_length, cur_delay_time = struct.unpack("<HHI", response[:8])
+            
+            # Use current values if None provided
+            cycle_length = cur_cycle_length if cycle_length is None else cycle_length
+            delay_time = cur_delay_time if delay_time is None else delay_time
+            
+            # Clamp values to valid ranges
+            cycle_length = max(0, min(cycle_length, 7999))
+            delay_time = max(1, min(delay_time, 2147483648))
+            
+            # Set new parameters
+            data=struct.pack("<HHI", channel, cycle_length, delay_time)
+            self.send_comm_data(0x0703, data, channel)
+    
+    def get_lut_parameters(self, channel=None):
+        """
+        Get current LUT parameters.
+        
+        Args:
+            channel: Channel number (if None, use default)
+            
+        Returns:
+            tuple: (cycle_length, delay_time)
+        """
+        channel=channel or self._default_axis
+        data=struct.pack("<H", channel)
+        response=self.send_comm_data(0x0704, data, channel)
+        
+        if len(response) >= 8:
+            _, cycle_length, delay_time = struct.unpack("<HHI", response[:8])
+            return (cycle_length, delay_time)
+        return (0, 1)
+    
+    def start_lut_output(self, channel=None):
+        """
+        Start LUT waveform output.
+        
+        Args:
+            channel: Channel number (if None, use default)
+        """
+        channel=channel or self._default_axis
+        data=struct.pack("<H", channel)
+        self.send_comm_data(0x0706, data, channel)
+    
+    def stop_lut_output(self, channel=None):
+        """
+        Stop LUT waveform output.
+        
+        Args:
+            channel: Channel number (if None, use default)
+        """
+        channel=channel or self._default_axis
+        data=struct.pack("<H", channel)
+        self.send_comm_data(0x0707, data, channel)
+    
+    def set_lut_data(self, lut_values, channel=None):
+        """
+        Load LUT waveform data (simplified version).
+        
+        Args:
+            lut_values (list): List of voltage values (0-7999 samples for BPC units)
+            channel: Channel number (if None, use default)
+            
+        Note:
+            This is a simplified implementation. Full LUT functionality 
+            may require more complex data formatting.
+        """
+        channel=channel or self._default_axis
+        
+        # Clamp number of samples
+        lut_values = lut_values[:7999] if len(lut_values) > 7999 else lut_values
+        
+        # Convert to appropriate format (this is simplified)
+        # Real implementation would need proper voltage conversion
+        data = struct.pack("<H", channel)
+        for value in lut_values[:16]:  # Send first 16 values as example
+            data += struct.pack("<h", int(value))
+            
+        self.send_comm_data(0x0700, data, channel)
 
 
 TQuadDetectorPIDParams=collections.namedtuple("TQuadDetectorPIDParams",["p","i","d"])
