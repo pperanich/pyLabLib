@@ -991,7 +991,9 @@ class KinesisDevice(IMultiaxisStage,BasicKinesisDevice):
         """
         data=self.query(0x0660,channel).data
         return struct.unpack("<I",data[6:10])[0]
-    _pzctl_status_bits=[(1<<0,"stage_connected"),(1<<4,"zeroed"),(1<<5,"zeroing"),(1<<8,"gauge_connected"),(1<<10,"closed_loop"),(1<<29,"active"),(1<<31,"enabled")]
+    _pzctl_status_bits=[(1<<0,"stage_connected"),(1<<4,"zeroed"),(1<<5,"zeroing"),(1<<8,"gauge_connected"),(1<<10,"closed_loop"),
+                        (1<<13,"voltage_75V"),(1<<14,"voltage_100V"),(1<<15,"voltage_150V"),
+                        (1<<29,"active"),(1<<31,"enabled")]
     @muxchannel
     def _pzctl_get_status(self, channel=None):
         """
@@ -1458,6 +1460,10 @@ class KinesisPiezoController(KinesisDevice):
     def __init__(self, conn, is_rack_system=False):
         super().__init__(conn,is_rack_system=is_rack_system)
         self.add_background_comm(0x0654) # randomly returned occasionally on enabling/disabling channels
+        # Add BPC3xx-specific background communication messages
+        if self._model.startswith("BPC30"):
+            self.add_background_comm(0x0661)  # PZ status update
+            self.add_background_comm(0x0662)  # PZ status update acknowledgment
         self._add_status_variable("enabled",self.is_channel_enabled,self.enable_channel)
         self._add_settings_variable("output",self.get_output_voltage,self.set_output_voltage)
         self._add_settings_variable("output_range",self.get_voltage_range,self.set_voltage_range)
@@ -1478,233 +1484,123 @@ class KinesisPiezoController(KinesisDevice):
     get_voltage_source=KinesisDevice._pzctl_get_voltage_source
     set_voltage_source=KinesisDevice._pzctl_set_voltage_source
 
-
-
-
-class BPC301(KinesisPiezoController):
-    """
-    BPC301/BPC303 Benchtop Piezo Controller.
-    
-    Extends KinesisPiezoController with BPC301-specific functionality including
-    slew rate control and factory reset capability.
-    
-    Args:
-        conn(str): serial connection parameters (usually an 8-digit device serial number).
-    """
-    def __init__(self, conn, is_rack_system=False):
-        super().__init__(conn, is_rack_system=is_rack_system)
-        # Add BPC301-specific background communication messages
-        self.add_background_comm(0x0661)  # PZ status update
-        self.add_background_comm(0x0662)  # PZ status update acknowledgment
-        
-        # Extend status bits with BPC30x specific voltage range detection
-        self._pzctl_status_bits = self._pzctl_status_bits + [
-            (1<<13, "voltage_75V"),    # Hardware set to 75V max
-            (1<<14, "voltage_100V"),   # Hardware set to 100V max
-            (1<<15, "voltage_150V"),   # Hardware set to 150V max
-        ]
-    
-    def set_slew_rates(self, rate1=None, rate2=None, channel=None):
+    # BPC3xx-specific methods
+    @muxchannel
+    def set_slew_rates(self, open_loop_rate=None, closed_loop_rate=None, channel=None):
         """
-        Set slew rates for voltage changes.
+        Set slew rates for voltage changes (BPC3xx specific).
         
         Args:
-            rate1: First slew rate parameter
-            rate2: Second slew rate parameter  
+            open_loop_rate: Open loop slew rate (0-32767)
+            closed_loop_rate: Closed loop slew rate (0-32767)
             channel: Channel number (if None, use default)
         """
-        channel=channel or self._default_axis
-        data=struct.pack("<HHH",channel,rate1 or 0,rate2 or 0)
-        self.send_comm_data(0x0683,data,channel)
-    
+        if not self._model.startswith("BPC30"):
+            raise ThorlabsError("Slew rate control is only available on BPC3xx devices")
+        
+        channel = channel or 1
+        open_loop_rate = open_loop_rate or 0
+        closed_loop_rate = closed_loop_rate or 0
+        data = struct.pack("<HHH", channel, open_loop_rate, closed_loop_rate)
+        self.send_comm_data(0x0683, data)
+
+    @muxchannel
     def get_slew_rates(self, channel=None):
         """
-        Get current slew rates.
+        Get current slew rates (BPC3xx specific).
         
         Args:
             channel: Channel number (if None, use default)
             
         Returns:
-            tuple: (rate1, rate2) slew rate parameters
+            tuple: (open_loop_rate, closed_loop_rate)
         """
-        channel=channel or self._default_axis
-        data=struct.pack("<H",channel)
-        response=self.send_comm_data(0x0684,data,channel)
-        if len(response)>=6:
-            _,rate1,rate2=struct.unpack("<HHH",response[:6])
-            return (rate1,rate2)
-        return (0,0)
-    
-    def factory_reset(self, channel=None):
-        """
-        Perform factory reset to restore default settings.
+        if not self._model.startswith("BPC30"):
+            raise ThorlabsError("Slew rate control is only available on BPC3xx devices")
         
-        Args:
-            channel: Channel number (if None, use default)
-        """
-        channel=channel or self._default_axis
-        data=struct.pack("<H",channel)
-        self.send_comm_data(0x0686,data,channel)
-    
+        channel = channel or 1
+        response = self.query(0x0684, channel)
+        if hasattr(response, 'data') and len(response.data) >= 6:
+            _, open_loop_rate, closed_loop_rate = struct.unpack("<HHH", response.data[:6])
+            return (open_loop_rate, closed_loop_rate)
+        return (0, 0)
+
+    @muxchannel
     def set_output_max_voltage(self, max_voltage, channel=None):
         """
-        Set maximum output voltage for the piezo actuator.
+        Set maximum output voltage for the piezo actuator (BPC3xx specific).
         
         Args:
             max_voltage (float): Maximum voltage in volts (0-150V depending on hardware)
             channel: Channel number (if None, use default)
-            
-        Returns:
-            tuple: (max_voltage, hardware_flags) Current settings
         """
-        channel=channel or self._default_axis
+        if not self._model.startswith("BPC30"):
+            raise ThorlabsError("Maximum voltage control is only available on BPC3xx devices")
+        
+        channel = channel or 1
         # Convert voltage to 0.1V steps (0-1500 for 0-150V)
         voltage_steps = int(max_voltage * 10)
         voltage_steps = max(0, min(voltage_steps, 1500))  # Clamp to valid range
         
-        data=struct.pack("<HHH", channel, voltage_steps, 0)  # flags set to 0 for SET
-        self.send_comm_data(0x0680, data, channel)
-        return self.get_output_max_voltage(channel)
-    
+        data = struct.pack("<HHH", channel, voltage_steps, 0)  # flags set to 0
+        self.send_comm_data(0x0680, data)
+
+    @muxchannel
     def get_output_max_voltage(self, channel=None):
         """
-        Get maximum output voltage and hardware capability flags.
+        Get maximum output voltage (BPC3xx specific).
         
         Args:
             channel: Channel number (if None, use default)
             
         Returns:
-            tuple: (max_voltage, capability_dict) where capability_dict contains
-                   '75V', '100V', '150V' keys indicating hardware limits
+            float: Maximum voltage in volts
         """
-        channel=channel or self._default_axis
-        data=struct.pack("<H", channel)
-        response=self.send_comm_data(0x0681, data, channel)
+        if not self._model.startswith("BPC30"):
+            raise ThorlabsError("Maximum voltage control is only available on BPC3xx devices")
         
-        if len(response) >= 6:
-            _, voltage_steps, flags = struct.unpack("<HHH", response[:6])
-            max_voltage = voltage_steps / 10.0  # Convert from 0.1V steps to volts
-            
-            # Decode hardware capability flags
-            capabilities = {
-                '75V': bool(flags & 0x02),   # Bit 1
-                '100V': bool(flags & 0x04),  # Bit 2  
-                '150V': bool(flags & 0x08)   # Bit 3
-            }
-            
-            return (max_voltage, capabilities)
-        return (0.0, {'75V': False, '100V': False, '150V': False})
-    
+        channel = channel or 1
+        response = self.query(0x0681, channel)
+        if hasattr(response, 'data') and len(response.data) >= 6:
+            _, voltage_steps, _ = struct.unpack("<HHH", response.data[:6])
+            return voltage_steps / 10.0  # Convert from 0.1V steps to volts
+        return 0.0
+
+    @muxchannel
     def set_zero_position(self, channel=None):
         """
-        Set current position as zero reference.
+        Set current position as zero reference (BPC3xx specific).
         
         This function applies 0V to the actuator and sets the current position
-        as the zero reference for all subsequent position readings. Typically
-        called during initialization or re-initialization.
+        as the zero reference for all subsequent position readings.
         
         Args:
             channel: Channel number (if None, use default)
         """
-        channel=channel or self._default_axis
-        data=struct.pack("<H", channel)
-        self.send_comm_data(0x0658, data, channel)
-    
-    def set_lut_parameters(self, cycle_length=None, delay_time=None, channel=None):
-        """
-        Set LUT (Look-Up Table) parameters for waveform generation.
+        if not self._model.startswith("BPC30"):
+            raise ThorlabsError("Zero position setting is only available on BPC3xx devices")
         
-        Args:
-            cycle_length (int): Number of samples per cycle (0-7999 for BPC units)
-            delay_time (int): Delay between samples (1-2147483648 intervals)
-            channel: Channel number (if None, use default)
+        channel = channel or 1
+        self.send_comm(0x0658, channel)
+
+    @muxchannel
+    def factory_reset(self, channel=None):
         """
-        channel=channel or self._default_axis
-        # Get current parameters first
-        data=struct.pack("<H", channel)
-        response=self.send_comm_data(0x0704, data, channel)
-        
-        if len(response) >= 10:
-            # Unpack current parameters
-            _, cur_cycle_length, cur_delay_time = struct.unpack("<HHI", response[:8])
-            
-            # Use current values if None provided
-            cycle_length = cur_cycle_length if cycle_length is None else cycle_length
-            delay_time = cur_delay_time if delay_time is None else delay_time
-            
-            # Clamp values to valid ranges
-            cycle_length = max(0, min(cycle_length, 7999))
-            delay_time = max(1, min(delay_time, 2147483648))
-            
-            # Set new parameters
-            data=struct.pack("<HHI", channel, cycle_length, delay_time)
-            self.send_comm_data(0x0703, data, channel)
-    
-    def get_lut_parameters(self, channel=None):
-        """
-        Get current LUT parameters.
-        
-        Args:
-            channel: Channel number (if None, use default)
-            
-        Returns:
-            tuple: (cycle_length, delay_time)
-        """
-        channel=channel or self._default_axis
-        data=struct.pack("<H", channel)
-        response=self.send_comm_data(0x0704, data, channel)
-        
-        if len(response) >= 8:
-            _, cycle_length, delay_time = struct.unpack("<HHI", response[:8])
-            return (cycle_length, delay_time)
-        return (0, 1)
-    
-    def start_lut_output(self, channel=None):
-        """
-        Start LUT waveform output.
+        Perform factory reset to restore default settings (BPC3xx specific).
         
         Args:
             channel: Channel number (if None, use default)
         """
-        channel=channel or self._default_axis
-        data=struct.pack("<H", channel)
-        self.send_comm_data(0x0706, data, channel)
-    
-    def stop_lut_output(self, channel=None):
-        """
-        Stop LUT waveform output.
+        if not self._model.startswith("BPC30"):
+            raise ThorlabsError("Factory reset is only available on BPC3xx devices")
         
-        Args:
-            channel: Channel number (if None, use default)
-        """
-        channel=channel or self._default_axis
-        data=struct.pack("<H", channel)
-        self.send_comm_data(0x0707, data, channel)
-    
-    def set_lut_data(self, lut_values, channel=None):
-        """
-        Load LUT waveform data (simplified version).
-        
-        Args:
-            lut_values (list): List of voltage values (0-7999 samples for BPC units)
-            channel: Channel number (if None, use default)
-            
-        Note:
-            This is a simplified implementation. Full LUT functionality 
-            may require more complex data formatting.
-        """
-        channel=channel or self._default_axis
-        
-        # Clamp number of samples
-        lut_values = lut_values[:7999] if len(lut_values) > 7999 else lut_values
-        
-        # Convert to appropriate format (this is simplified)
-        # Real implementation would need proper voltage conversion
-        data = struct.pack("<H", channel)
-        for value in lut_values[:16]:  # Send first 16 values as example
-            data += struct.pack("<h", int(value))
-            
-        self.send_comm_data(0x0700, data, channel)
+        channel = channel or 1
+        self.send_comm(0x0686, channel)
+
+
+
+
+
 
 
 TQuadDetectorPIDParams=collections.namedtuple("TQuadDetectorPIDParams",["p","i","d"])
