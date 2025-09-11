@@ -1060,7 +1060,7 @@ class KinesisDevice(IMultiaxisStage, BasicKinesisDevice):
     )
 
     _p_pzctl_position_units = interface.EnumParameterClass(
-        "pzctl_position_units", ["perc", "steps"]
+        "pzctl_position_units", ["perc", "steps", "um", "mm"]
     )
 
     @muxchannel
@@ -1699,37 +1699,57 @@ class KinesisDevice(IMultiaxisStage, BasicKinesisDevice):
         )
         return self._wip._pzctl_is_channel_enabled(channel)
 
-    _p_pzctl_voltage_range = interface.EnumParameterClass(
-        "pzctl_voltage_range", {75: 0x01, 100: 0x02, 150: 0x03}
-    )
 
-    @muxchannel
-    @interface.use_parameters(_returns="pzctl_voltage_range")
-    def _pzctl_get_voltage_range(self, channel=None):
-        """Get piezo controller output voltage range (in V)"""
-        data = self.query(0x07D5, channel).data
-        return struct.unpack("<H", data[2:4])[0]
-
-    @muxchannel
-    @interface.use_parameters(rng="pzctl_voltage_range")
-    def _pzctl_set_voltage_range(self, rng, channel=None):
-        """Set piezo controller output voltage range (in V)"""
-        data = self.query(0x07D5, channel).data
-        data = data[:2] + struct.pack("<H", rng) + data[4:]
-        self.send_comm_data(0x07D4, data)
-        return self._pzctl_get_voltage_range(channel)
 
     _p_pzctl_voltage_units = interface.EnumParameterClass(
         "pzctl_voltage_units", ["V", "perc"]
     )
+    
+    _p_pzctl_travel_units = interface.EnumParameterClass(
+        "pzctl_travel_units", ["steps", "um", "mm"]
+    )
 
     def _pzctl_voltage_u2d(self, v, units, channel):
-        span = 100.0 if units == "perc" else self._pzctl_get_voltage_range(channel)
+        if units == "perc":
+            span = 100.0
+        else:
+            # Use max output voltage setting as the voltage span
+            span = self._pzctl_get_max_output_voltage(channel)
         return max(-(2**15), min(int(v / span * (2**15 - 1)), 2**15 - 1))
 
     def _pzctl_voltage_d2u(self, v, units, channel):
-        span = 100.0 if units == "perc" else self._pzctl_get_voltage_range(channel)
+        if units == "perc":
+            span = 100.0
+        else:
+            # Use max output voltage setting as the voltage span
+            span = self._pzctl_get_max_output_voltage(channel)
         return v / (2**15 - 1) * span
+
+    def _pzctl_travel_u2d(self, travel, units):
+        """Convert travel from user units to device steps (0-65535)"""
+        if units == "steps":
+            return int(travel)
+        elif units == "um":
+            # Convert micrometers to 100nm steps: 1 um = 10 steps
+            return int(travel * 10)
+        elif units == "mm":
+            # Convert millimeters to 100nm steps: 1 mm = 10000 steps
+            return int(travel * 10000)
+        else:
+            return int(travel)
+
+    def _pzctl_travel_d2u(self, steps, units):
+        """Convert travel from device steps (0-65535) to user units"""
+        if units == "steps":
+            return steps
+        elif units == "um":
+            # Convert 100nm steps to micrometers: 1 step = 0.1 um
+            return steps * 0.1
+        elif units == "mm":
+            # Convert 100nm steps to millimeters: 1 step = 0.0001 mm
+            return steps * 0.0001
+        else:
+            return steps
 
     @muxchannel
     @interface.use_parameters(units="pzctl_voltage_units")
@@ -1804,25 +1824,76 @@ class KinesisDevice(IMultiaxisStage, BasicKinesisDevice):
         """Convert position from device units (0-32767) to 0-100%"""
         return pos / 32767.0 * 100.0
 
-    @muxchannel
-    @interface.use_parameters(units="pzctl_position_units")
-    def _pzctl_get_output_position(self, units="perc", channel=None):
-        """Get piezo controller output position (closed loop mode only)"""
-        data = self.query(0x0647, channel).data
-        position = struct.unpack("<HH", data)[1]
+    def _pzctl_position_to_physical(self, percentage, units, channel):
+        """Convert position from percentage to physical units using max travel"""
         if units == "perc":
-            return self._pzctl_position_d2u(position)
-        else:  # units == "steps"
+            return percentage
+        elif units == "steps":
+            return int(percentage / 100.0 * 32767)
+        elif units in ["um", "mm"]:
+            max_travel_um = self._pzctl_get_max_travel(units="um", channel=channel)
+            physical_pos = percentage / 100.0 * max_travel_um
+            if units == "mm":
+                return physical_pos / 1000.0
+            else:  # units == "um"
+                return physical_pos
+        else:
+            return percentage
+
+    def _pzctl_position_from_physical(self, position, units, channel):
+        """Convert position from physical units to percentage using max travel"""
+        if units == "perc":
+            return position
+        elif units == "steps":
+            return position / 32767.0 * 100.0
+        elif units in ["um", "mm"]:
+            max_travel_um = self._pzctl_get_max_travel(units="um", channel=channel)
+            if units == "mm":
+                position_um = position * 1000.0
+            else:  # units == "um"
+                position_um = position
+            return position_um / max_travel_um * 100.0
+        else:
             return position
 
     @muxchannel
     @interface.use_parameters(units="pzctl_position_units")
+    def _pzctl_get_output_position(self, units="perc", channel=None):
+        """
+        Get piezo controller output position (closed loop mode only).
+        
+        Args:
+            units: Position units - "perc" (0-100%), "steps" (0-32767), "um" (micrometers), "mm" (millimeters)
+            channel: Channel number
+            
+        Returns:
+            float: Position in the specified units
+        """
+        data = self.query(0x0647, channel).data
+        position_steps = struct.unpack("<HH", data)[1]
+        position_perc = self._pzctl_position_d2u(position_steps)
+        return self._pzctl_position_to_physical(position_perc, units, channel)
+
+    @muxchannel
+    @interface.use_parameters(units="pzctl_position_units")
     def _pzctl_set_output_position(self, position, units="perc", channel=None):
-        """Set piezo controller output position (closed loop mode only)"""
-        if units == "perc":
-            position = self._pzctl_position_u2d(position)
-        # else: position is already in steps (0-32767)
-        self.send_comm_data(0x0646, struct.pack("<HH", channel, position))
+        """
+        Set piezo controller output position (closed loop mode only).
+        
+        Args:
+            position: Target position in the specified units
+            units: Position units - "perc" (0-100%), "steps" (0-32767), "um" (micrometers), "mm" (millimeters)
+            channel: Channel number
+            
+        Returns:
+            float: Actual position in the specified units
+        """
+        # Convert from physical units to percentage
+        position_perc = self._pzctl_position_from_physical(position, units, channel)
+        # Convert percentage to device steps
+        position_steps = self._pzctl_position_u2d(position_perc)
+        # Send command
+        self.send_comm_data(0x0646, struct.pack("<HH", channel, position_steps))
         return self._pzctl_get_output_position(units, channel)
 
     @muxchannel
@@ -2156,31 +2227,55 @@ class KinesisDevice(IMultiaxisStage, BasicKinesisDevice):
         return TPIConstants(proportional_gain, integral_gain, reserved)
 
     @muxchannel
-    def _pzctl_set_max_travel(self, travel_distance, channel=None):
+    @interface.use_parameters(units="pzctl_travel_units")
+    def _pzctl_set_max_travel(self, travel_distance, units="um", channel=None):
         """
         Set maximum travel distance for the piezo actuator.
 
         Args:
-            travel_distance: Maximum travel distance in position counts (long)
+            travel_distance: Maximum travel distance in specified units
+            units: Units for travel distance ("steps", "um", "mm")
             channel: Channel number
         """
-        data = struct.pack(
-            "<HHL", channel, 0, travel_distance
-        )  # Second word is reserved
+        # Convert to device steps and clamp to valid range (0-65535)
+        travel_steps = self._pzctl_travel_u2d(travel_distance, units)
+        travel_steps = max(0, min(65535, travel_steps))
+        
+        # According to BPC documentation: 4-byte data = [Chan ID (word)][Travel (word)]
+        data = struct.pack("<HH", channel, travel_steps)
         self.send_comm_data(0x064F, data)
-        return self._pzctl_get_max_travel(channel)
+        return self._pzctl_get_max_travel(units=units, channel=channel)
 
     @muxchannel
-    def _pzctl_get_max_travel(self, channel=None):
+    @interface.use_parameters(units="pzctl_travel_units")
+    def _pzctl_get_max_travel(self, units="um", channel=None):
         """
         Get maximum travel distance for the piezo actuator.
-
+        
+        Args:
+            units: Units for returned travel distance ("steps", "um", "mm")
+            
         Returns:
-            TMaxTravel: Named tuple with max travel distance
+            float: Maximum travel distance in specified units
         """
-        data = self.query(0x0650, channel).data
-        channel_id, reserved, travel_distance = struct.unpack("<HHL", data[:8])
-        return TMaxTravel(travel_distance, reserved)
+        try:
+            data = self.query(0x0650, channel).data
+            
+            # According to BPC documentation: 4-byte data = [Chan ID (word)][Travel (word)]
+            # Travel is in 100nm steps, range 0-65535
+            if len(data) >= 4:
+                channel_id, travel_steps = struct.unpack("<HH", data[:4])
+                return self._pzctl_travel_d2u(travel_steps, units)
+            elif len(data) >= 2:
+                # Fallback: assume just travel value
+                travel_steps = struct.unpack("<H", data[:2])[0]
+                return self._pzctl_travel_d2u(travel_steps, units)
+            else:
+                # No meaningful data
+                return 0.0
+        except Exception as e:
+            print(f"Max travel command failed: {e}")
+            return 0.0
 
     @muxchannel
     def _pzctl_save_parameters(self, channel=None):
@@ -3000,10 +3095,16 @@ class KinesisPiezoController(KinesisDevice):
 
     get_output_voltage = KinesisDevice._pzctl_get_output_voltage
     set_output_voltage = KinesisDevice._pzctl_set_output_voltage
-    get_voltage_range = KinesisDevice._pzctl_get_voltage_range
-    set_voltage_range = KinesisDevice._pzctl_set_voltage_range
     get_voltage_source = KinesisDevice._pzctl_get_voltage_source
     set_voltage_source = KinesisDevice._pzctl_set_voltage_source
+
+    def get_voltage_range(self, channel=None):
+        """Get piezo controller maximum output voltage setting (in V)"""
+        return self._pzctl_get_max_output_voltage(channel)
+
+    def set_voltage_range(self, rng, channel=None):
+        """Set piezo controller maximum output voltage setting (in V)"""
+        return self._pzctl_set_max_output_voltage(rng, channel)
 
     # Control mode methods
     get_control_mode = KinesisDevice._pzctl_get_control_mode
@@ -3013,6 +3114,7 @@ class KinesisPiezoController(KinesisDevice):
     get_output_position = KinesisDevice._pzctl_get_output_position
     set_output_position = KinesisDevice._pzctl_set_output_position
     set_zero_position = KinesisDevice._pzctl_set_zero_position
+    set_zero = KinesisDevice._pzctl_set_zero_position  # Alias for convenience
 
     # Status methods
     get_status_bits = KinesisDevice._pzctl_get_status_bits
@@ -3037,6 +3139,10 @@ class KinesisPiezoController(KinesisDevice):
     set_max_travel = KinesisDevice._pzctl_set_max_travel
     get_max_travel = KinesisDevice._pzctl_get_max_travel
 
+    # BPC3xx Max Output Voltage Methods
+    get_max_output_voltage = KinesisDevice._pzctl_get_max_output_voltage
+    set_max_output_voltage = KinesisDevice._pzctl_set_max_output_voltage
+    
     # BPC3xx EEPROM and Advanced Methods
     save_parameters = KinesisDevice._pzctl_save_parameters
     set_advanced_pid_constants = KinesisDevice._pzctl_set_advanced_pid_constants
