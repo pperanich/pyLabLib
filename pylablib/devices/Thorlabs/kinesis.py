@@ -1756,9 +1756,32 @@ class KinesisDevice(IMultiaxisStage, BasicKinesisDevice):
         },
     )
 
+    _p_lut_mode = interface.EnumParameterClass(
+        "lut_mode",
+        {
+            "continuous": 0x01,
+            "fixed_cycles": 0x02,
+            "output_trigger": 0x04,
+            "input_trigger": 0x08,
+            "output_trigger_high": 0x10,
+            "input_trigger_high": 0x20,
+            "lut_gated": 0x40,
+            "output_trigger_repeat": 0x80,
+        },
+    )
+
+    _p_io_settings = interface.EnumParameterClass(
+        "io_settings",
+        {
+            "disabled": 0x00,
+            "input_enabled": 0x01,
+            "output_enabled": 0x02,
+            "bidirectional": 0x03,
+        },
+    )
+
     @muxchannel
     @interface.use_parameters(_returns="pzctl_control_mode")
-    @muxchannel
     def _pzctl_get_control_mode(self, channel=None):
         """Get piezo controller position control mode (BPC3xx only)"""
         if not self._model.startswith("BPC30"):
@@ -1808,8 +1831,12 @@ class KinesisDevice(IMultiaxisStage, BasicKinesisDevice):
         self.send_comm(0x0658, channel)
 
     @muxchannel
-    @interface.use_parameters(voltage_units="pzctl_voltage_units", position_units="pzctl_position_units")
-    def _pzctl_get_status_bits(self, voltage_units="V", position_units="perc", channel=None):
+    @interface.use_parameters(
+        voltage_units="pzctl_voltage_units", position_units="pzctl_position_units"
+    )
+    def _pzctl_get_status_bits(
+        self, voltage_units="V", position_units="perc", channel=None
+    ):
         """
         Get piezo controller status information including voltage, position, and status bits.
 
@@ -1819,17 +1846,19 @@ class KinesisDevice(IMultiaxisStage, BasicKinesisDevice):
         - status_bits: 32-bit status word
         """
         data = self.query(0x065B, channel).data
-        channel_id, voltage_raw, position_raw, status_bits = struct.unpack("<HHHI", data[:10])
-        
+        channel_id, voltage_raw, position_raw, status_bits = struct.unpack(
+            "<HHHI", data[:10]
+        )
+
         # Convert voltage using existing conversion functions
         voltage = self._pzctl_voltage_d2u(voltage_raw, voltage_units, channel)
-        
-        # Convert position 
+
+        # Convert position
         if position_units == "perc":
             position = self._pzctl_position_d2u(position_raw)
         else:  # position_units == "steps"
             position = position_raw
-            
+
         return (voltage, position, status_bits)
 
     @muxchannel
@@ -1898,6 +1927,461 @@ class KinesisDevice(IMultiaxisStage, BasicKinesisDevice):
         self.send_comm_data(0x0652, struct.pack("<HH", channel, src))
         return self._pzctl_get_voltage_source(channel)
 
+    @muxchannel
+    def _pzctl_set_lut_value(self, index, value, channel=None):
+        """
+        Set individual LUT array value for BPC3xx controllers.
+
+        Args:
+            index: LUT array index (0-7999 for BPC, 0-512 for TPZ)
+            value: LUT value (-32768 to 32767, representing -100% to +100% of max voltage)
+            channel: Channel number
+        """
+        # Clamp value to valid range
+        value = max(-32768, min(32767, int(value)))
+        index = max(0, min(7999, int(index)))  # BPC supports 0-7999
+        data = struct.pack("<HHh", channel, index, value)
+        self.send_comm_data(0x0700, data)
+
+    @muxchannel
+    def _pzctl_get_lut_value(self, channel=None):
+        """
+        Get LUT value from last accessed index for BPC3xx controllers.
+
+        Returns:
+            int: LUT value (-32768 to 32767)
+        """
+        data = self.query(0x0701, channel).data
+        return struct.unpack("<HHh", data)[2]
+
+    @muxchannel
+    @interface.use_parameters(mode="lut_mode")
+    def _pzctl_set_lut_parameters(
+        self,
+        mode=None,
+        cycle_length=None,
+        num_cycles=None,
+        delay_time=None,
+        pre_cycle_rest=None,
+        post_cycle_rest=None,
+        output_trig_start=None,
+        output_trig_width=None,
+        trig_repeat_cycle=None,
+        channel=None,
+    ):
+        """
+        Set LUT waveform parameters for BPC3xx controllers.
+
+        Args:
+            mode: LUT mode (see _p_lut_mode for valid values)
+            cycle_length: Number of samples per cycle (0-7999 BPC, 0-512 TPZ)
+            num_cycles: Number of cycles in fixed mode (1-2147483648)
+            delay_time: Delay between samples in sample intervals
+            pre_cycle_rest: Delay before starting LUT output
+            post_cycle_rest: Delay after LUT cycle completion
+            output_trig_start: LUT position to start output trigger (1-8000)
+            output_trig_width: Output trigger width (1ms increments)
+            trig_repeat_cycle: Repeat interval between triggers (0-7999)
+            channel: Channel number
+        """
+        # Get current parameters if any are None
+        current = self._pzctl_get_lut_parameters(channel=channel)
+
+        mode = current.mode if mode is None else mode
+        cycle_length = current.cycle_length if cycle_length is None else cycle_length
+        num_cycles = current.num_cycles if num_cycles is None else num_cycles
+        delay_time = current.delay_time if delay_time is None else delay_time
+        pre_cycle_rest = (
+            current.pre_cycle_rest if pre_cycle_rest is None else pre_cycle_rest
+        )
+        post_cycle_rest = (
+            current.post_cycle_rest if post_cycle_rest is None else post_cycle_rest
+        )
+        output_trig_start = (
+            current.output_trig_start
+            if output_trig_start is None
+            else output_trig_start
+        )
+        output_trig_width = (
+            current.output_trig_width
+            if output_trig_width is None
+            else output_trig_width
+        )
+        trig_repeat_cycle = (
+            current.trig_repeat_cycle
+            if trig_repeat_cycle is None
+            else trig_repeat_cycle
+        )
+
+        # Clamp values to valid ranges
+        cycle_length = max(0, min(7999, int(cycle_length)))  # BPC supports 0-7999
+        num_cycles = max(1, min(2147483648, int(num_cycles)))
+        delay_time = max(0, min(2147483648, int(delay_time)))
+        pre_cycle_rest = max(0, min(2147483648, int(pre_cycle_rest)))
+        post_cycle_rest = max(0, min(2147483648, int(post_cycle_rest)))
+        output_trig_start = max(1, min(8000, int(output_trig_start)))
+        output_trig_width = max(0, min(2147483648, int(output_trig_width)))
+        trig_repeat_cycle = max(0, min(7999, int(trig_repeat_cycle)))
+
+        # Pack according to BPC3xx protocol: 30 bytes total
+        # Chan(2) + Mode(2) + CycleLength(2) + NumCycles(4) + DelayTime(4) +
+        # PreCycleRest(4) + PostCycleRest(4) + OPTrigStart(2) + OPTrigWidth(4) + TrigRepCycle(2)
+        data = struct.pack(
+            "<HHHLLLLHLH",
+            channel,
+            mode,
+            cycle_length,
+            num_cycles,
+            delay_time,
+            pre_cycle_rest,
+            post_cycle_rest,
+            output_trig_start,
+            output_trig_width,
+            trig_repeat_cycle,
+        )
+        self.send_comm_data(0x0703, data)
+
+    @muxchannel
+    @interface.use_parameters(
+        _returns=["lut_mode", None, None, None, None, None, None, None, None]
+    )
+    def _pzctl_get_lut_parameters(self, channel=None):
+        """
+        Get LUT waveform parameters for BPC3xx controllers.
+
+        Returns:
+            TLUTParams: Named tuple with LUT parameters
+        """
+        data = self.query(0x0704, channel).data
+        # Unpack 30-byte data structure per BPC3xx protocol
+        # Chan(2) + Mode(2) + CycleLength(2) + NumCycles(4) + DelayTime(4) +
+        # PreCycleRest(4) + PostCycleRest(4) + OPTrigStart(2) + OPTrigWidth(4) + TrigRepCycle(2)
+        params = struct.unpack("<HHHLLLLHLH", data[2:32])
+
+        return TLUTParams(
+            params[1],
+            params[2],
+            params[3],
+            params[4],
+            params[5],
+            params[6],
+            params[7],
+            params[8],
+            params[9],
+        )
+
+    @muxchannel
+    def _pzctl_start_lut_output(self, channel=None):
+        """
+        Start LUT waveform output for BPC3xx controllers.
+        """
+        self.send_comm(0x0706, channel)
+
+    @muxchannel
+    def _pzctl_stop_lut_output(self, channel=None):
+        """
+        Stop LUT waveform output for BPC3xx controllers.
+        """
+        self.send_comm(0x0707, channel)
+
+    @muxchannel
+    @interface.use_parameters(settings="io_settings")
+    def _pzctl_set_io_settings(self, settings, channel=None):
+        """
+        Set I/O configuration settings for BPC3xx controllers.
+
+        Args:
+            settings: I/O configuration settings (see _p_io_settings for valid values)
+            channel: Channel number
+        """
+        data = struct.pack("<HHH", channel, settings, 0)  # Reserved word = 0
+        self.send_comm_data(0x0670, data)
+
+    @muxchannel
+    @interface.use_parameters(_returns="io_settings")
+    def _pzctl_get_io_settings(self, channel=None):
+        """
+        Get I/O configuration settings for BPC3xx controllers.
+
+        Returns:
+            TIOSettings: Named tuple with I/O settings
+        """
+        data = self.query(0x0671, channel).data
+        channel_id, settings, reserved = struct.unpack("<HHH", data[:6])
+        return TIOSettings(settings, reserved)
+
+    @muxchannel
+    def _pzctl_set_pi_constants(
+        self, proportional_gain=None, integral_gain=None, channel=None
+    ):
+        """
+        Set proportional-integral constants for closed-loop position control.
+
+        Args:
+            proportional_gain: Proportional gain constant (word)
+            integral_gain: Integral gain constant (word)
+            channel: Channel number
+        """
+        if proportional_gain is None and integral_gain is None:
+            return self._pzctl_get_pi_constants(channel)
+
+        current_params = self._pzctl_get_pi_constants(channel)
+        proportional_gain = (
+            current_params.proportional_gain
+            if proportional_gain is None
+            else proportional_gain
+        )
+        integral_gain = (
+            current_params.integral_gain if integral_gain is None else integral_gain
+        )
+
+        data = struct.pack(
+            "<HHHHL", channel, proportional_gain, integral_gain, 0, 0
+        )  # Reserved long = 0
+        self.send_comm_data(0x0655, data)
+        return self._pzctl_get_pi_constants(channel)
+
+    @muxchannel
+    def _pzctl_get_pi_constants(self, channel=None):
+        """
+        Get proportional-integral constants for closed-loop position control.
+
+        Returns:
+            TPIConstants: Named tuple with PI constants
+        """
+        data = self.query(0x0656, channel).data
+        channel_id, proportional_gain, integral_gain, reserved = struct.unpack(
+            "<HHHL", data[:10]
+        )
+        return TPIConstants(proportional_gain, integral_gain, reserved)
+
+    @muxchannel
+    def _pzctl_set_max_travel(self, travel_distance, channel=None):
+        """
+        Set maximum travel distance for the piezo actuator.
+
+        Args:
+            travel_distance: Maximum travel distance in position counts (long)
+            channel: Channel number
+        """
+        data = struct.pack(
+            "<HHL", channel, 0, travel_distance
+        )  # Second word is reserved
+        self.send_comm_data(0x064F, data)
+        return self._pzctl_get_max_travel(channel)
+
+    @muxchannel
+    def _pzctl_get_max_travel(self, channel=None):
+        """
+        Get maximum travel distance for the piezo actuator.
+
+        Returns:
+            TMaxTravel: Named tuple with max travel distance
+        """
+        data = self.query(0x0650, channel).data
+        channel_id, reserved, travel_distance = struct.unpack("<HHL", data[:8])
+        return TMaxTravel(travel_distance, reserved)
+
+    @muxchannel
+    def _pzctl_save_parameters(self, channel=None):
+        """
+        Save current parameters to EEPROM for BPC3xx controllers.
+        """
+        self.send_comm_data(0x07D0, struct.pack("<H", channel))
+
+    @muxchannel
+    def _pzctl_set_advanced_pid_constants(
+        self, kp_gain=None, ki_gain=None, kd_gain=None, channel=None
+    ):
+        """
+        Set advanced PID constants for BPC3xx controllers.
+
+        Args:
+            kp_gain: Proportional gain constant (word)
+            ki_gain: Integral gain constant (word)
+            kd_gain: Derivative gain constant (word)
+            channel: Channel number
+        """
+        if kp_gain is None and ki_gain is None and kd_gain is None:
+            return self._pzctl_get_advanced_pid_constants(channel)
+
+        current_params = self._pzctl_get_advanced_pid_constants(channel)
+        kp_gain = current_params.kp_gain if kp_gain is None else kp_gain
+        ki_gain = current_params.ki_gain if ki_gain is None else ki_gain
+        kd_gain = current_params.kd_gain if kd_gain is None else kd_gain
+
+        data = struct.pack("<HHHHL", channel, kp_gain, ki_gain, kd_gain, 0)
+        self.send_comm_data(0x0690, data)
+        return self._pzctl_get_advanced_pid_constants(channel)
+
+    @muxchannel
+    def _pzctl_get_advanced_pid_constants(self, channel=None):
+        """
+        Get advanced PID constants for BPC3xx controllers.
+
+        Returns:
+            TAdvancedPIDConstants: Named tuple with PID constants
+        """
+        data = self.query(0x0691, channel).data
+        channel_id, kp_gain, ki_gain, kd_gain, reserved = struct.unpack(
+            "<HHHHL", data[:12]
+        )
+        return TAdvancedPIDConstants(kp_gain, ki_gain, kd_gain, reserved)
+
+    @muxchannel
+    def _pzctl_set_notch_filter(
+        self, frequency=None, quality_factor=None, channel=None
+    ):
+        """
+        Configure notch filter parameters for BPC3xx controllers.
+
+        Args:
+            frequency: Notch filter frequency (word)
+            quality_factor: Notch filter quality factor (word)
+            channel: Channel number
+        """
+        if frequency is None and quality_factor is None:
+            return self._pzctl_get_notch_filter(channel)
+
+        current_params = self._pzctl_get_notch_filter(channel)
+        frequency = current_params.frequency if frequency is None else frequency
+        quality_factor = (
+            current_params.quality_factor if quality_factor is None else quality_factor
+        )
+
+        data = struct.pack("<HHHH", channel, frequency, quality_factor, 0)
+        self.send_comm_data(0x0693, data)
+        return self._pzctl_get_notch_filter(channel)
+
+    @muxchannel
+    def _pzctl_get_notch_filter(self, channel=None):
+        """
+        Get notch filter parameters for BPC3xx controllers.
+
+        Returns:
+            TNotchFilterParams: Named tuple with notch filter parameters
+        """
+        data = self.query(0x0694, channel).data
+        channel_id, frequency, quality_factor, reserved = struct.unpack(
+            "<HHHH", data[:8]
+        )
+        return TNotchFilterParams(frequency, quality_factor, reserved)
+
+    @muxchannel
+    def _pzctl_set_advanced_io_settings(
+        self, config_flags=None, threshold1=None, threshold2=None, channel=None
+    ):
+        """
+        Set advanced I/O configuration for BPC3xx controllers.
+
+        Args:
+            config_flags: I/O configuration flags (word)
+            threshold1: First threshold value (word)
+            threshold2: Second threshold value (word)
+            channel: Channel number
+        """
+        if config_flags is None and threshold1 is None and threshold2 is None:
+            return self._pzctl_get_advanced_io_settings(channel)
+
+        current_params = self._pzctl_get_advanced_io_settings(channel)
+        config_flags = (
+            current_params.config_flags if config_flags is None else config_flags
+        )
+        threshold1 = current_params.threshold1 if threshold1 is None else threshold1
+        threshold2 = current_params.threshold2 if threshold2 is None else threshold2
+
+        data = struct.pack(
+            "<HHHHHH", channel, config_flags, threshold1, threshold2, 0, 0
+        )
+        self.send_comm_data(0x0696, data)
+        return self._pzctl_get_advanced_io_settings(channel)
+
+    @muxchannel
+    def _pzctl_get_advanced_io_settings(self, channel=None):
+        """
+        Get advanced I/O configuration for BPC3xx controllers.
+
+        Returns:
+            TAdvancedIOSettings: Named tuple with I/O settings
+        """
+        data = self.query(0x0697, channel).data
+        channel_id, config_flags, threshold1, threshold2, reserved1, reserved2 = (
+            struct.unpack("<HHHHHH", data[:12])
+        )
+        return TAdvancedIOSettings(
+            config_flags, threshold1, threshold2, reserved1, reserved2
+        )
+
+
+TLUTParams = collections.namedtuple(
+    "TLUTParams",
+    [
+        "mode",
+        "cycle_length",
+        "num_cycles",
+        "delay_time",
+        "pre_cycle_rest",
+        "post_cycle_rest",
+        "output_trig_start",
+        "output_trig_width",
+        "trig_repeat_cycle",
+    ],
+)
+
+TIOSettings = collections.namedtuple(
+    "TIOSettings",
+    [
+        "settings",
+        "reserved",
+    ],
+)
+
+TPIConstants = collections.namedtuple(
+    "TPIConstants",
+    [
+        "proportional_gain",
+        "integral_gain",
+        "reserved",
+    ],
+)
+
+TMaxTravel = collections.namedtuple(
+    "TMaxTravel",
+    [
+        "travel_distance",
+        "reserved",
+    ],
+)
+
+TAdvancedPIDConstants = collections.namedtuple(
+    "TAdvancedPIDConstants",
+    [
+        "kp_gain",
+        "ki_gain",
+        "kd_gain",
+        "reserved",
+    ],
+)
+
+TNotchFilterParams = collections.namedtuple(
+    "TNotchFilterParams",
+    [
+        "frequency",
+        "quality_factor",
+        "reserved",
+    ],
+)
+
+TAdvancedIOSettings = collections.namedtuple(
+    "TAdvancedIOSettings",
+    [
+        "config_flags",
+        "threshold1",
+        "threshold2",
+        "reserved1",
+        "reserved2",
+    ],
+)
 
 TFlipperParameters = collections.namedtuple(
     "TFlipperParameters",
@@ -2493,7 +2977,7 @@ class KinesisPiezoController(KinesisDevice):
             "output_source", self.get_voltage_source, self.set_voltage_source
         )
         self._add_status_variable("status", lambda: self.get_status(channel="all"))
-        
+
         # Add BPC3xx-specific settings variables
         if self._model.startswith("BPC30"):
             self._add_settings_variable(
@@ -2532,6 +3016,35 @@ class KinesisPiezoController(KinesisDevice):
 
     # Status methods
     get_status_bits = KinesisDevice._pzctl_get_status_bits
+
+    # BPC3xx LUT Methods
+    set_lut_value = KinesisDevice._pzctl_set_lut_value
+    get_lut_value = KinesisDevice._pzctl_get_lut_value
+    set_lut_parameters = KinesisDevice._pzctl_set_lut_parameters
+    get_lut_parameters = KinesisDevice._pzctl_get_lut_parameters
+    start_lut_output = KinesisDevice._pzctl_start_lut_output
+    stop_lut_output = KinesisDevice._pzctl_stop_lut_output
+
+    # BPC3xx I/O Settings Methods
+    set_io_settings = KinesisDevice._pzctl_set_io_settings
+    get_io_settings = KinesisDevice._pzctl_get_io_settings
+
+    # BPC3xx PID Control Methods
+    set_pi_constants = KinesisDevice._pzctl_set_pi_constants
+    get_pi_constants = KinesisDevice._pzctl_get_pi_constants
+
+    # BPC3xx Max Travel Methods
+    set_max_travel = KinesisDevice._pzctl_set_max_travel
+    get_max_travel = KinesisDevice._pzctl_get_max_travel
+
+    # BPC3xx EEPROM and Advanced Methods
+    save_parameters = KinesisDevice._pzctl_save_parameters
+    set_advanced_pid_constants = KinesisDevice._pzctl_set_advanced_pid_constants
+    get_advanced_pid_constants = KinesisDevice._pzctl_get_advanced_pid_constants
+    set_notch_filter = KinesisDevice._pzctl_set_notch_filter
+    get_notch_filter = KinesisDevice._pzctl_get_notch_filter
+    set_advanced_io_settings = KinesisDevice._pzctl_set_advanced_io_settings
+    get_advanced_io_settings = KinesisDevice._pzctl_get_advanced_io_settings
 
 
 TQuadDetectorPIDParams = collections.namedtuple(
@@ -2739,4 +3252,3 @@ class KinesisQuadDetector(BasicKinesisDevice):
         )
         self._quad_set(0x05, data)
         return self.get_output_parameters()
-

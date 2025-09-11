@@ -1,7 +1,6 @@
 from ... import device_thread
 
 
-
 class KinesisMotorThread(device_thread.DeviceThread):
     """
     Thorlabs motor controller device thread.
@@ -27,65 +26,77 @@ class KinesisMotorThread(device_thread.DeviceThread):
         - ``stop_motion``: stop motion
         - ``set_velocity``: set maximal velocity and acceleration
     """
+
     def connect_device(self):
-        with self.using_devclass("Thorlabs.KinesisMotor",host=self.remote) as cls:
-            self.device=cls(conn=self.conn,**self.dev_kwargs)  # pylint: disable=not-callable
+        with self.using_devclass("Thorlabs.KinesisMotor", host=self.remote) as cls:
+            self.device = cls(conn=self.conn, **self.dev_kwargs)  # pylint: disable=not-callable
             self.device.get_position()
+
     def setup_task(self, conn, remote=None, move_precision=None, **kwargs):  # pylint: disable=arguments-differ
-        self.device_reconnect_tries=5
-        self.conn=conn
-        self.remote=remote
-        self.move_precision=move_precision
-        self._last_move_to=None
-        self.dev_kwargs=kwargs
-        self.add_job("update_measurements",self.update_measurements,.5)
-        self.add_job("update_parameters",self.update_parameters,2)
+        self.device_reconnect_tries = 5
+        self.conn = conn
+        self.remote = remote
+        self.move_precision = move_precision
+        self._last_move_to = None
+        self.dev_kwargs = kwargs
+        self.add_job("update_measurements", self.update_measurements, 0.5)
+        self.add_job("update_parameters", self.update_parameters, 2)
         self.add_command("move_to")
         self.add_command("set_position_reference")
         self.add_command("jog")
         self.add_command("home")
         self.add_command("stop_motion")
         self.add_command("set_velocity")
+
     def _check_move_precision(self):
-        if (self.move_precision is not None) and (self._last_move_to is not None) and (not self.v["moving"]):
-            if abs(self.v["position"]-self._last_move_to)>self.move_precision:
+        if (
+            (self.move_precision is not None)
+            and (self._last_move_to is not None)
+            and (not self.v["moving"])
+        ):
+            if abs(self.v["position"] - self._last_move_to) > self.move_precision:
                 self.move_to(self._last_move_to)
             else:
-                self._last_move_to=None
+                self._last_move_to = None
+
     def update_measurements(self):
         if self.open():
-            self.v["position"]=self.device.get_position()
-            self.v["axis_status"]=self.device.get_status()
-            self.v["moving"]=self.device.is_moving()
+            self.v["position"] = self.device.get_position()
+            self.v["axis_status"] = self.device.get_status()
+            self.v["moving"] = self.device.is_moving()
             self._check_move_precision()
         else:
-            self.v["position"]=0
-            self.v["axis_status"]=[]
-            self.v["moving"]=False
-    
+            self.v["position"] = 0
+            self.v["axis_status"] = []
+            self.v["moving"] = False
+
     def _stop_wait(self, reset_move_to=True):
         if self.device.is_moving():
             self.device.stop(sync=True)
         if reset_move_to:
-            self._last_move_to=None
+            self._last_move_to = None
+
     def move_to(self, position):
         """Move to `position` (positive or negative)"""
         if self.open():
             self._stop_wait()
             self.device.move_to(position)
-            self._last_move_to=position
+            self._last_move_to = position
             self.update_measurements()
+
     def set_position_reference(self, position=0):
         """Reference to a new position (assign current position to `position`)"""
         if self.open():
             self.device.set_position_reference(position)
             self.update_measurements()
+
     def jog(self, direction):
         """Start moving in a given direction (``"+"`` or ``"-"``)"""
         if self.open():
             self._stop_wait()
             self.device.jog(direction)
             self.update_measurements()
+
     def home(self):
         """Home the device"""
         if self.open():
@@ -93,17 +104,20 @@ class KinesisMotorThread(device_thread.DeviceThread):
             self.device.home()
             self.update_measurements()
             self.update_parameters()
+
     def stop_motion(self):
         """Stop motion at a given axis"""
         if self.open():
             self._stop_wait()
             self.update_measurements()
+
     def set_velocity(self, max_velocity, acceleration=None):
         """Set maximal motion velocity"""
         if self.open():
-            self.device.setup_velocity(max_velocity=max_velocity,acceleration=acceleration)
+            self.device.setup_velocity(
+                max_velocity=max_velocity, acceleration=acceleration
+            )
             self.update_parameters()
-
 
 
 class KinesisPiezoMotorThread(device_thread.DeviceThread):
@@ -129,18 +143,20 @@ class KinesisPiezoMotorThread(device_thread.DeviceThread):
         - ``stop_motion``: stop motion
         - ``setup_drive``: set maximal velocity and acceleration, as well as the drive voltage
     """
+
     def connect_device(self):
-        with self.using_devclass("Thorlabs.KinesisPiezoMotor",host=self.remote) as cls:
-            self.device=cls(conn=self.conn,**self.dev_kwargs)  # pylint: disable=not-callable
+        with self.using_devclass("Thorlabs.KinesisPiezoMotor", host=self.remote) as cls:
+            self.device = cls(conn=self.conn, **self.dev_kwargs)  # pylint: disable=not-callable
             self.device.get_position()
+
     def setup_task(self, conn, remote=None, default_channels=1, **kwargs):  # pylint: disable=arguments-differ
-        self.device_reconnect_tries=5
-        self.conn=conn
-        self.remote=remote
-        self.dev_kwargs=kwargs
-        self.default_channels=default_channels
-        self.add_job("update_measurements",self.update_measurements,.5)
-        self.add_job("update_parameters",self.update_parameters,2)
+        self.device_reconnect_tries = 5
+        self.conn = conn
+        self.remote = remote
+        self.dev_kwargs = kwargs
+        self.default_channels = default_channels
+        self.add_job("update_measurements", self.update_measurements, 0.5)
+        self.add_job("update_parameters", self.update_parameters, 2)
         self.add_device_command("enable_channels")
         self.add_device_command("get_enabled_channels")
         self.add_command("move_to")
@@ -149,55 +165,66 @@ class KinesisPiezoMotorThread(device_thread.DeviceThread):
         self.add_command("jog")
         self.add_command("stop_motion")
         self.add_command("setup_drive")
+
     def update_measurements(self):
         if self.open():
             for ch in self.device.get_all_axes():
-                self.v["position",ch]=self.device.get_position(channel=ch)
-                self.v["axis_status",ch]=self.device.get_status(channel=ch)
-                self.v["moving",ch]=self.device.is_moving(channel=ch)
+                self.v["position", ch] = self.device.get_position(channel=ch)
+                self.v["axis_status", ch] = self.device.get_status(channel=ch)
+                self.v["moving", ch] = self.device.is_moving(channel=ch)
         else:
-            for ch in range(1,self.default_channels+1):
-                self.v["position",ch]=0
-                self.v["axis_status",ch]=[]
-                self.v["moving",ch]=False
-    
+            for ch in range(1, self.default_channels + 1):
+                self.v["position", ch] = 0
+                self.v["axis_status", ch] = []
+                self.v["moving", ch] = False
+
     def _stop_wait(self, channel=None):
         if self.device.is_moving(channel=channel):
-            self.device.stop(channel=channel,sync=True)
+            self.device.stop(channel=channel, sync=True)
+
     def move_to(self, position, channel=None):
         """Move to `position` (positive or negative) at a given channel"""
         if self.open():
             self._stop_wait(channel=channel)
-            self.device.move_to(position,channel=channel)
+            self.device.move_to(position, channel=channel)
             self.update_measurements()
+
     def set_position_reference(self, position=0, channel=None):
         """Reference to a new position (assign current position to `position`) on a given channel"""
         if self.open():
-            self.device.set_position_reference(position,channel=channel)
+            self.device.set_position_reference(position, channel=channel)
             self.update_measurements()
+
     def move_by(self, distance, channel=None):
         """Move by `distance` (positive or negative) at a given channel"""
         if self.open():
             self._stop_wait(channel=channel)
-            self.device.move_by(distance,channel=channel)
+            self.device.move_by(distance, channel=channel)
             self.update_measurements()
+
     def jog(self, direction, channel=None):
         """Start moving in a given direction (``"+"`` or ``"-"``) on a given channel"""
         if self.open():
             self._stop_wait(channel=channel)
-            self.device.jog(direction,channel=channel)
+            self.device.jog(direction, channel=channel)
             self.update_measurements()
+
     def stop_motion(self, channel=None):
         """Stop motion at a given channel"""
         if self.open():
             self._stop_wait(channel=channel)
             self.update_measurements()
+
     def setup_drive(self, velocity=None, voltage=None, acceleration=None, channel=None):
         """Set maximal motion velocity, maximal voltage, and acceleration on a given channel"""
         if self.open():
-            self.device.setup_drive(max_voltage=voltage,velocity=velocity,acceleration=acceleration,channel=channel)
+            self.device.setup_drive(
+                max_voltage=voltage,
+                velocity=velocity,
+                acceleration=acceleration,
+                channel=channel,
+            )
             self.update_parameters()
-
 
 
 class KinesisPiezoControllerThread(device_thread.DeviceThread):
@@ -216,6 +243,9 @@ class KinesisPiezoControllerThread(device_thread.DeviceThread):
         - ``control_mode``: current control mode (``"open_loop"`` or ``"closed_loop"``) for BPC series
         - ``position``: last measured output position (0-100%) for BPC series in closed loop mode
         - ``status_bits``: detailed status information for BPC series
+        - ``lut_parameters``: LUT parameters for BPC3xx series (sample rate, cycle length, trigger modes)
+        - ``io_settings``: I/O configuration for BPC3xx series (trigger types, signal routing)
+        - ``pid_constants``: PID control constants for BPC3xx series
         - ``parameters``: main stage parameters: voltage range and source, etc.
 
     Commands:
@@ -225,80 +255,251 @@ class KinesisPiezoControllerThread(device_thread.DeviceThread):
         - ``set_control_mode``: set control mode (``"open_loop"`` or ``"closed_loop"``) for BPC series
         - ``set_output_position``: set output position (0-100%) for BPC series in closed loop mode
         - ``set_zero_position``: set current position as zero reference for BPC series
+        - ``set_lut_value``: set individual LUT values for BPC3xx series
+        - ``get_lut_value``: get individual LUT values for BPC3xx series
+        - ``set_lut_parameters``: configure LUT parameters for BPC3xx series
+        - ``start_lut_output``: start LUT-based output for BPC3xx series
+        - ``stop_lut_output``: stop LUT-based output for BPC3xx series
+        - ``set_io_settings``: configure I/O settings for BPC3xx series
+        - ``set_pi_constants``: set PI control constants for BPC3xx series
+        - ``set_max_travel``: set maximum travel range for BPC3xx series
+        - ``save_parameters``: save current parameters to device memory for BPC3xx series
+        - ``set_advanced_pid_constants``: set advanced PID constants for BPC3xx series
+        - ``set_notch_filter``: configure notch filter settings for BPC3xx series
+        - ``set_advanced_io_settings``: configure advanced I/O settings for BPC3xx series
     """
+
     def connect_device(self):
-        with self.using_devclass("Thorlabs.KinesisPiezoController",host=self.remote) as cls:
-            self.device=cls(conn=self.conn,**self.dev_kwargs)  # pylint: disable=not-callable
+        with self.using_devclass(
+            "Thorlabs.KinesisPiezoController", host=self.remote
+        ) as cls:
+            self.device = cls(conn=self.conn, **self.dev_kwargs)  # pylint: disable=not-callable
             self.device.get_output_voltage()
+
     def setup_task(self, conn, remote=None, default_channels=1, **kwargs):  # pylint: disable=arguments-differ
-        self.device_reconnect_tries=5
-        self.conn=conn
-        self.remote=remote
-        self.dev_kwargs=kwargs
-        self.default_channels=default_channels
-        self.add_job("update_measurements",self.update_measurements,.5)
-        self.add_job("update_parameters",self.update_parameters,2)
+        self.device_reconnect_tries = 5
+        self.conn = conn
+        self.remote = remote
+        self.dev_kwargs = kwargs
+        self.default_channels = default_channels
+        self.add_job("update_measurements", self.update_measurements, 0.5)
+        self.add_job("update_parameters", self.update_parameters, 2)
         self.add_command("enable_channel")
         self.add_command("set_output_voltage")
         self.add_command("setup_voltage_output_parameters")
         self.add_command("set_control_mode")
         self.add_command("set_output_position")
         self.add_command("set_zero_position")
+
+        # BPC3xx-specific LUT commands
+        self.add_command("set_lut_value")
+        self.add_command("get_lut_value")
+        self.add_command("set_lut_parameters")
+        self.add_command("start_lut_output")
+        self.add_command("stop_lut_output")
+
+        # BPC3xx-specific configuration commands
+        self.add_command("set_io_settings")
+        self.add_command("set_pi_constants")
+        self.add_command("set_max_travel")
+        self.add_command("save_parameters")
+        self.add_command("set_advanced_pid_constants")
+        self.add_command("set_notch_filter")
+        self.add_command("set_advanced_io_settings")
+
     def update_measurements(self):
         if self.open():
             for ch in self.device.get_all_axes():
-                self.v["voltage",ch]=self.device.get_output_voltage(channel=ch)
-                self.v["enabled",ch]=self.device.is_channel_enabled(channel=ch)
-                self.v["control_mode",ch]=self.device.get_control_mode(channel=ch)
-                if self.v["control_mode",ch] == "closed_loop":
-                    self.v["position",ch]=self.device.get_output_position(channel=ch)
+                self.v["voltage", ch] = self.device.get_output_voltage(channel=ch)
+                self.v["enabled", ch] = self.device.is_channel_enabled(channel=ch)
+                self.v["control_mode", ch] = self.device.get_control_mode(channel=ch)
+                if self.v["control_mode", ch] == "closed_loop":
+                    self.v["position", ch] = self.device.get_output_position(channel=ch)
                 else:
-                    self.v["position",ch]=None
-                self.v["status_bits",ch]=self.device.get_status_bits(channel=ch)
+                    self.v["position", ch] = None
+                self.v["status_bits", ch] = self.device.get_status_bits(channel=ch)
         else:
-            for ch in range(1,self.default_channels+1):
-                self.v["voltage",ch]=0
-                self.v["enabled",ch]=False
-                self.v["control_mode",ch]="open_loop"
-                self.v["position",ch]=None
-                self.v["status_bits",ch]={}
-    
+            for ch in range(1, self.default_channels + 1):
+                self.v["voltage", ch] = 0
+                self.v["enabled", ch] = False
+                self.v["control_mode", ch] = "open_loop"
+                self.v["position", ch] = None
+                self.v["status_bits", ch] = {}
+
     def enable_channel(self, enabled=True, channel=None):
         """Enable or disable the given channel"""
         if self.open():
-            self.device.enable_channel(enabled,channel=channel)
+            self.device.enable_channel(enabled, channel=channel)
             self.update_measurements()
+
     def set_output_voltage(self, voltage, channel=None):
         """Set piezo controller output voltage"""
         if self.open():
-            self.device.set_output_voltage(voltage,channel=channel)
+            self.device.set_output_voltage(voltage, channel=channel)
             self.update_measurements()
+
     def setup_voltage_output_parameters(self, src=None, rng=None, channel=None):
         """Set the voltage output parameters: source and range"""
         if self.open():
             if src is not None:
-                self.device.set_voltage_source(src,channel=channel)
+                self.device.set_voltage_source(src, channel=channel)
             if rng is not None:
-                self.device.set_voltage_range(rng,channel=channel)
+                self.device.set_voltage_range(rng, channel=channel)
             self.update_parameters()
-    
+
     def set_control_mode(self, mode, channel=None):
         """Set control mode (``"open_loop"`` or ``"closed_loop"``) for BPC series controllers"""
         if self.open():
-            self.device.set_control_mode(mode,channel=channel)
+            self.device.set_control_mode(mode, channel=channel)
             self.update_measurements()
+
     def set_output_position(self, position, channel=None):
         """Set output position (0-100%) for BPC series controllers in closed loop mode"""
         if self.open():
             self.device.set_output_position(position, channel=channel)
             self.update_measurements()
+
     def set_zero_position(self, channel=None):
         """Set current position as zero reference for BPC series controllers"""
         if self.open():
             self.device.set_zero_position(channel=channel)
             self.update_measurements()
 
+    def set_lut_value(self, index, value, channel=None):
+        """Set individual LUT value for BPC3xx series controllers"""
+        if self.open():
+            self.device.set_lut_value(index, value, channel=channel)
+            self.update_measurements()
 
+    def get_lut_value(self, index, channel=None):
+        """Get individual LUT value for BPC3xx series controllers"""
+        if self.open():
+            return self.device.get_lut_value(index, channel=channel)
+        return None
+
+    def set_lut_parameters(
+        self,
+        mode=None,
+        cycle_length=None,
+        num_cycles=None,
+        delay_time=None,
+        pre_cycle_rest=None,
+        post_cycle_rest=None,
+        output_trig_start=None,
+        output_trig_width=None,
+        trig_repeat_cycle=None,
+        channel=None,
+    ):
+        """Configure LUT parameters for BPC3xx series controllers"""
+        if self.open():
+            self.device.set_lut_parameters(
+                mode=mode,
+                cycle_length=cycle_length,
+                num_cycles=num_cycles,
+                delay_time=delay_time,
+                pre_cycle_rest=pre_cycle_rest,
+                post_cycle_rest=post_cycle_rest,
+                output_trig_start=output_trig_start,
+                output_trig_width=output_trig_width,
+                trig_repeat_cycle=trig_repeat_cycle,
+                channel=channel,
+            )
+            self.update_parameters()
+
+    def start_lut_output(self, channel=None):
+        """Start LUT-based output for BPC3xx series controllers"""
+        if self.open():
+            self.device.start_lut_output(channel=channel)
+            self.update_measurements()
+
+    def stop_lut_output(self, channel=None):
+        """Stop LUT-based output for BPC3xx series controllers"""
+        if self.open():
+            self.device.stop_lut_output(channel=channel)
+            self.update_measurements()
+
+    def set_io_settings(self, settings, channel=None):
+        """Configure I/O settings for BPC3xx series controllers"""
+        if self.open():
+            self.device.set_io_settings(settings, channel=channel)
+            self.update_parameters()
+
+    def set_pi_constants(
+        self, proportional_gain=None, integral_gain=None, channel=None
+    ):
+        """Set PI control constants for BPC3xx series controllers"""
+        if self.open():
+            self.device.set_pi_constants(
+                proportional_gain=proportional_gain,
+                integral_gain=integral_gain,
+                channel=channel,
+            )
+            self.update_parameters()
+
+    def set_max_travel(self, max_travel, channel=None):
+        """Set maximum travel range for BPC3xx series controllers"""
+        if self.open():
+            self.device.set_max_travel(max_travel, channel=channel)
+            self.update_parameters()
+
+    def save_parameters(self, channel=None):
+        """Save current parameters to device memory for BPC3xx series controllers"""
+        if self.open():
+            self.device.save_parameters(channel=channel)
+            self.update_parameters()
+
+    def set_advanced_pid_constants(
+        self,
+        proportional_gain=None,
+        integral_gain=None,
+        derivative_gain=None,
+        integral_limit=None,
+        parameter_filter=None,
+        channel=None,
+    ):
+        """Set advanced PID constants for BPC3xx series controllers"""
+        if self.open():
+            self.device.set_advanced_pid_constants(
+                proportional_gain=proportional_gain,
+                integral_gain=integral_gain,
+                derivative_gain=derivative_gain,
+                integral_limit=integral_limit,
+                parameter_filter=parameter_filter,
+                channel=channel,
+            )
+            self.update_parameters()
+
+    def set_notch_filter(
+        self, center_frequency=None, quality_factor=None, enabled=None, channel=None
+    ):
+        """Configure notch filter settings for BPC3xx series controllers"""
+        if self.open():
+            self.device.set_notch_filter(
+                center_frequency=center_frequency,
+                quality_factor=quality_factor,
+                enabled=enabled,
+                channel=channel,
+            )
+            self.update_parameters()
+
+    def set_advanced_io_settings(
+        self,
+        monitor_output_mode=None,
+        monitor_output_bandwidth=None,
+        feedback_source=None,
+        input_source=None,
+        channel=None,
+    ):
+        """Configure advanced I/O settings for BPC3xx series controllers"""
+        if self.open():
+            self.device.set_advanced_io_settings(
+                monitor_output_mode=monitor_output_mode,
+                monitor_output_bandwidth=monitor_output_bandwidth,
+                feedback_source=feedback_source,
+                input_source=input_source,
+                channel=channel,
+            )
+            self.update_parameters()
 
 
 class MFFThread(device_thread.DeviceThread):
@@ -316,24 +517,26 @@ class MFFThread(device_thread.DeviceThread):
     Commands:
         - ``move_to_state``: move to a new state
     """
+
     def connect_device(self):
-        with self.using_devclass("Thorlabs.MFF",host=self.remote) as cls:
-            self.device=cls(conn=self.conn,**self.dev_kwargs)  # pylint: disable=not-callable
+        with self.using_devclass("Thorlabs.MFF", host=self.remote) as cls:
+            self.device = cls(conn=self.conn, **self.dev_kwargs)  # pylint: disable=not-callable
             self.device.get_state()
+
     def setup_task(self, conn, remote=None, **kwargs):  # pylint: disable=arguments-differ
-        self.device_reconnect_tries=5
-        self.conn=conn
-        self.remote=remote
-        self.dev_kwargs=kwargs
-        self.add_job("update_measurements",self.update_measurements,.2)
-        self.add_job("update_parameters",self.update_parameters,2)
-        self.add_device_command("move_to_state",post_update="update_measurements")
+        self.device_reconnect_tries = 5
+        self.conn = conn
+        self.remote = remote
+        self.dev_kwargs = kwargs
+        self.add_job("update_measurements", self.update_measurements, 0.2)
+        self.add_job("update_parameters", self.update_parameters, 2)
+        self.add_device_command("move_to_state", post_update="update_measurements")
+
     def update_measurements(self):
         if self.open():
-            self.v["state"]=self.device.get_state()
+            self.v["state"] = self.device.get_state()
         else:
-            self.v["state"]=0
-
+            self.v["state"] = 0
 
 
 class KinesisQuadDetectorThread(device_thread.DeviceThread):
@@ -347,49 +550,57 @@ class KinesisQuadDetectorThread(device_thread.DeviceThread):
     Variables:
         - ``readings``: last measured sensor readings
         - ``parameters``: device parameters: pid gains, mode, output parameters, etc.
-    
+
     Commands:
         - ``set_operation_mode``: set operation mode (typically either ``"open_loop"`` or ``"closed_loop"``)
         - ``set_manual_output``: set manual outputs in the open loop mode
     """
-    default_parameter_values={"enabled":False}
-    parameter_variables=default_parameter_values.keys()
+
+    default_parameter_values = {"enabled": False}
+    parameter_variables = default_parameter_values.keys()
+
     def connect_device(self):
-        with self.using_devclass("Thorlabs.KinesisQuadDetector",host=self.remote) as cls:
-            self.device=cls(conn=self.conn)  # pylint: disable=not-callable
+        with self.using_devclass(
+            "Thorlabs.KinesisQuadDetector", host=self.remote
+        ) as cls:
+            self.device = cls(conn=self.conn)  # pylint: disable=not-callable
             self.device.get_readings()
+
     def setup_task(self, conn, remote=None):  # pylint: disable=arguments-differ
-        self.device_reconnect_tries=5
-        self.conn=conn
-        self.remote=remote
-        self.add_job("update_measurements",self.update_measurements,.2)
-        self.add_job("update_parameters",self.update_parameters,2)
+        self.device_reconnect_tries = 5
+        self.conn = conn
+        self.remote = remote
+        self.add_job("update_measurements", self.update_measurements, 0.2)
+        self.add_job("update_parameters", self.update_parameters, 2)
         self.add_command("set_operation_mode")
         self.add_command("set_manual_output")
+
     def update_measurements(self):
         """Update current measurements"""
         if self.open():
-            self.v["readings"]=self.device.get_readings()._asdict()
-            self.v["mode"]=self.device.get_operation_mode()
+            self.v["readings"] = self.device.get_readings()._asdict()
+            self.v["mode"] = self.device.get_operation_mode()
         else:
-            for k in ["xdiff","ydiff","sum","xout","yout"]:
-                self.v["readings",k]=0
-            self.v["mode"]="open_loop"
-            self.sleep(1.)
-    
+            for k in ["xdiff", "ydiff", "sum", "xout", "yout"]:
+                self.v["readings", k] = 0
+            self.v["mode"] = "open_loop"
+            self.sleep(1.0)
+
     def set_operation_mode(self, mode):
         """Set current operation mode: ``"monitor"``, ``"open_loop"``, ``"closed_loop"``, or ``"auto_loop"``"""
         if self.open():
             self.device.set_operation_mode(mode)
             self.update_measurements()
+
     def set_manual_output(self, xpos=None, ypos=None, set_open_loop=True):
         """
         Set current manual output values (used in open loop mode).
-        
+
         If ``set_open_loop==True``, explicitly move the device into the open loop mode first.
         """
         if self.open():
             if set_open_loop:
                 self.device.set_operation_mode("open_loop")
-            self.device.set_manual_output(xpos=xpos,ypos=ypos)
+            self.device.set_manual_output(xpos=xpos, ypos=ypos)
             self.update_measurements()
+
