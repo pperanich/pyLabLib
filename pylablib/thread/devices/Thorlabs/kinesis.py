@@ -202,7 +202,7 @@ class KinesisPiezoMotorThread(device_thread.DeviceThread):
 
 class KinesisPiezoControllerThread(device_thread.DeviceThread):
     """
-    Thorlabs piezo controller (TPZ/KPZ series) device thread.
+    Thorlabs piezo controller (TPZ/KPZ/BPC series) device thread.
 
     Device args:
         - ``conn``: serial connection parameters (usually an 8-digit device serial number)
@@ -213,12 +213,18 @@ class KinesisPiezoControllerThread(device_thread.DeviceThread):
     Variables:
         - ``enabled``: whether the output is enabled
         - ``voltage``: last measured output voltage
+        - ``control_mode``: current control mode (``"open_loop"`` or ``"closed_loop"``) for BPC series
+        - ``position``: last measured output position (0-100%) for BPC series in closed loop mode
+        - ``status_bits``: detailed status information for BPC series
         - ``parameters``: main stage parameters: voltage range and source, etc.
 
     Commands:
         - ``enable_channel``: enable or disable the output
         - ``set_output_voltage``: set the software output voltage
         - ``setup_voltage_output_parameters``: setup voltage output parameters: source and range
+        - ``set_control_mode``: set control mode (``"open_loop"`` or ``"closed_loop"``) for BPC series
+        - ``set_output_position``: set output position (0-100%) for BPC series in closed loop mode
+        - ``set_zero_position``: set current position as zero reference for BPC series
     """
     def connect_device(self):
         with self.using_devclass("Thorlabs.KinesisPiezoController",host=self.remote) as cls:
@@ -235,15 +241,27 @@ class KinesisPiezoControllerThread(device_thread.DeviceThread):
         self.add_command("enable_channel")
         self.add_command("set_output_voltage")
         self.add_command("setup_voltage_output_parameters")
+        self.add_command("set_control_mode")
+        self.add_command("set_output_position")
+        self.add_command("set_zero_position")
     def update_measurements(self):
         if self.open():
             for ch in self.device.get_all_axes():
                 self.v["voltage",ch]=self.device.get_output_voltage(channel=ch)
                 self.v["enabled",ch]=self.device.is_channel_enabled(channel=ch)
+                self.v["control_mode",ch]=self.device.get_control_mode(channel=ch)
+                if self.v["control_mode",ch] == "closed_loop":
+                    self.v["position",ch]=self.device.get_output_position(channel=ch)
+                else:
+                    self.v["position",ch]=None
+                self.v["status_bits",ch]=self.device.get_status_bits(channel=ch)
         else:
             for ch in range(1,self.default_channels+1):
                 self.v["voltage",ch]=0
                 self.v["enabled",ch]=False
+                self.v["control_mode",ch]="open_loop"
+                self.v["position",ch]=None
+                self.v["status_bits",ch]={}
     
     def enable_channel(self, enabled=True, channel=None):
         """Enable or disable the given channel"""
@@ -263,6 +281,22 @@ class KinesisPiezoControllerThread(device_thread.DeviceThread):
             if rng is not None:
                 self.device.set_voltage_range(rng,channel=channel)
             self.update_parameters()
+    
+    def set_control_mode(self, mode, channel=None):
+        """Set control mode (``"open_loop"`` or ``"closed_loop"``) for BPC series controllers"""
+        if self.open():
+            self.device.set_control_mode(mode,channel=channel)
+            self.update_measurements()
+    def set_output_position(self, position, channel=None):
+        """Set output position (0-100%) for BPC series controllers in closed loop mode"""
+        if self.open():
+            self.device.set_output_position(position, channel=channel)
+            self.update_measurements()
+    def set_zero_position(self, channel=None):
+        """Set current position as zero reference for BPC series controllers"""
+        if self.open():
+            self.device.set_zero_position(channel=channel)
+            self.update_measurements()
 
 
 
