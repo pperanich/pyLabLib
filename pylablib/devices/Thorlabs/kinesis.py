@@ -273,7 +273,7 @@ class BasicKinesisDevice(comm_backend.ICommBackendWrapper):
         35: "BMS002",
         37: "MFF10.",
         40: "(BSC101|SSC20.)",
-        41: "BPC101",
+        41: "(BPC101|BPC201|BPC301)",
         43: "BDC101",
         44: "PPC001",
         45: "LTS",
@@ -1699,12 +1699,10 @@ class KinesisDevice(IMultiaxisStage, BasicKinesisDevice):
         )
         return self._wip._pzctl_is_channel_enabled(channel)
 
-
-
     _p_pzctl_voltage_units = interface.EnumParameterClass(
         "pzctl_voltage_units", ["V", "perc"]
     )
-    
+
     _p_pzctl_travel_units = interface.EnumParameterClass(
         "pzctl_travel_units", ["steps", "um", "mm"]
     )
@@ -1861,11 +1859,11 @@ class KinesisDevice(IMultiaxisStage, BasicKinesisDevice):
     def _pzctl_get_output_position(self, units="perc", channel=None):
         """
         Get piezo controller output position (closed loop mode only).
-        
+
         Args:
             units: Position units - "perc" (0-100%), "steps" (0-32767), "um" (micrometers), "mm" (millimeters)
             channel: Channel number
-            
+
         Returns:
             float: Position in the specified units
         """
@@ -1879,12 +1877,12 @@ class KinesisDevice(IMultiaxisStage, BasicKinesisDevice):
     def _pzctl_set_output_position(self, position, units="perc", channel=None):
         """
         Set piezo controller output position (closed loop mode only).
-        
+
         Args:
             position: Target position in the specified units
             units: Position units - "perc" (0-100%), "steps" (0-32767), "um" (micrometers), "mm" (millimeters)
             channel: Channel number
-            
+
         Returns:
             float: Actual position in the specified units
         """
@@ -2240,7 +2238,7 @@ class KinesisDevice(IMultiaxisStage, BasicKinesisDevice):
         # Convert to device steps and clamp to valid range (0-65535)
         travel_steps = self._pzctl_travel_u2d(travel_distance, units)
         travel_steps = max(0, min(65535, travel_steps))
-        
+
         # According to BPC documentation: 4-byte data = [Chan ID (word)][Travel (word)]
         data = struct.pack("<HH", channel, travel_steps)
         self.send_comm_data(0x064F, data)
@@ -2251,16 +2249,16 @@ class KinesisDevice(IMultiaxisStage, BasicKinesisDevice):
     def _pzctl_get_max_travel(self, units="um", channel=None):
         """
         Get maximum travel distance for the piezo actuator.
-        
+
         Args:
             units: Units for returned travel distance ("steps", "um", "mm")
-            
+
         Returns:
             float: Maximum travel distance in specified units
         """
         try:
             data = self.query(0x0650, channel).data
-            
+
             # According to BPC documentation: 4-byte data = [Chan ID (word)][Travel (word)]
             # Travel is in 100nm steps, range 0-65535
             if len(data) >= 4:
@@ -3142,7 +3140,7 @@ class KinesisPiezoController(KinesisDevice):
     # BPC3xx Max Output Voltage Methods
     get_max_output_voltage = KinesisDevice._pzctl_get_max_output_voltage
     set_max_output_voltage = KinesisDevice._pzctl_set_max_output_voltage
-    
+
     # BPC3xx EEPROM and Advanced Methods
     save_parameters = KinesisDevice._pzctl_save_parameters
     set_advanced_pid_constants = KinesisDevice._pzctl_set_advanced_pid_constants
